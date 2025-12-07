@@ -29,7 +29,7 @@ async def scan_ports(start: int = 3000, end: int = 9999) -> List[Dict]:
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
-def get_process_info(port: int) -> str:
+def get_process_info(port: int) -> tuple:
     try:
         result = subprocess.run(
             ['lsof', '-i', f':{port}', '-sTCP:LISTEN', '-n', '-P'],
@@ -38,40 +38,47 @@ def get_process_info(port: int) -> str:
         lines = result.stdout.strip().split('\n')
         if len(lines) > 1:
             parts = lines[1].split()
-            return parts[0] if parts else "Unknown"
+            process = parts[0] if parts else "Unknown"
+            
+            non_web_processes = {'postgres', 'mysql', 'mysqld', 'mongod', 'redis-server', 'memcached'}
+            is_non_web = any(nwp in process.lower() for nwp in non_web_processes)
+            return process, not is_non_web
     except:
         pass
-    return "Unknown"
+    return "Unknown", True
 
-async def get_page_title(port: int) -> str:
+async def get_page_info(port: int) -> tuple:
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=0.5) as client:
             response = await client.get(f"http://localhost:{port}")
             soup = BeautifulSoup(response.text, 'html.parser')
             title = soup.find('title')
-            return title.string.strip() if title and title.string else None
+            title_text = title.string.strip() if title and title.string else None
+            
+            if not title_text:
+                return None, None
+            
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page(viewport={'width': 1280, 'height': 720})
+                await page.goto(f"http://localhost:{port}", timeout=5000, wait_until='load')
+                await page.wait_for_timeout(500)
+                screenshot = await page.screenshot(type='png')
+                await browser.close()
+                thumbnail = base64.b64encode(screenshot).decode('utf-8')
+                return title_text, thumbnail
     except:
-        return None
-
-async def get_thumbnail(port: int) -> str:
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page(viewport={'width': 1280, 'height': 720})
-            await page.goto(f"http://localhost:{port}", timeout=3000, wait_until='networkidle')
-            screenshot = await page.screenshot(type='png')
-            await browser.close()
-            return base64.b64encode(screenshot).decode('utf-8')
-    except:
-        return None
+        return None, None
 
 @app.get("/api/ports")
 async def get_ports():
     ports = await scan_ports()
     for p in ports:
-        p["process"] = get_process_info(p["port"])
-        p["title"] = await get_page_title(p["port"])
-        p["thumbnail"] = await get_thumbnail(p["port"])
+        p["process"], is_likely_web = get_process_info(p["port"])
+        if is_likely_web:
+            p["title"], p["thumbnail"] = await get_page_info(p["port"])
+        else:
+            p["title"], p["thumbnail"] = None, None
     return {"ports": ports}
 
 @app.get("/", response_class=HTMLResponse)
