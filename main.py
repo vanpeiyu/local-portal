@@ -1,6 +1,7 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 import socket
+import json
 import subprocess
 from typing import List, Dict
 import asyncio
@@ -80,6 +81,20 @@ async def get_ports():
         else:
             p["title"], p["thumbnail"] = None, None
     return {"ports": ports}
+
+@app.get("/api/ports/stream")
+async def stream_ports():
+    async def generate():
+        ports = await scan_ports()
+        for p in ports:
+            p["process"], is_likely_web = get_process_info(p["port"])
+            if is_likely_web:
+                p["title"], p["thumbnail"] = await get_page_info(p["port"])
+            else:
+                p["title"], p["thumbnail"] = None, None
+            yield f"data: {json.dumps(p)}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -248,6 +263,55 @@ async def root():
         }
         @keyframes spin {
             to { transform: rotate(360deg); }
+        }
+        .skeleton {
+            background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--border) 50%, var(--bg-secondary) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 6px;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        .skeleton-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px var(--shadow);
+        }
+        .skeleton-thumbnail {
+            width: 100%;
+            height: 180px;
+            background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--border) 50%, var(--bg-secondary) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        .skeleton-body {
+            padding: 20px;
+        }
+        .skeleton-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .skeleton-badge {
+            width: 60px;
+            height: 32px;
+        }
+        .skeleton-process {
+            width: 80px;
+            height: 24px;
+        }
+        .skeleton-title {
+            width: 70%;
+            height: 20px;
+            margin-bottom: 8px;
+        }
+        .skeleton-link {
+            width: 90%;
+            height: 16px;
         }
         .grid {
             display: grid;
@@ -428,8 +492,96 @@ async def root():
             document.documentElement.setAttribute('data-theme', theme);
         }
         
+        function showSkeleton() {
+            const skeletonHTML = `
+                <h2 class="section-title">🌐 Webサーバー</h2>
+                <div id="web-grid" class="grid">
+                    ${Array(3).fill(0).map(() => `
+                        <div class="skeleton-card">
+                            <div class="skeleton-thumbnail"></div>
+                            <div class="skeleton-body">
+                                <div class="skeleton-header">
+                                    <div class="skeleton skeleton-badge"></div>
+                                    <div class="skeleton skeleton-process"></div>
+                                </div>
+                                <div class="skeleton skeleton-title"></div>
+                                <div class="skeleton skeleton-link"></div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                <h2 class="section-title">🔌 その他のサービス</h2>
+                <div id="non-web-table" class="non-web-table"><table><thead><tr><th>ポート</th><th>プロセス</th></tr></thead><tbody></tbody></table></div>
+            `;
+            document.getElementById('content').innerHTML = skeletonHTML;
+        }
+        
         async function refresh() {
-            document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div>スキャン中...</div>';
+            showSkeleton();
+            const webPorts = [];
+            const nonWebPorts = [];
+            
+            const eventSource = new EventSource('/api/ports/stream');
+            
+            eventSource.onmessage = (event) => {
+                if (event.data === '[DONE]') {
+                    eventSource.close();
+                    if (webPorts.length === 0 && nonWebPorts.length === 0) {
+                        document.getElementById('content').innerHTML = '<div class="empty">📭 開いているポートが見つかりませんでした</div>';
+                    }
+                    return;
+                }
+                
+                const port = JSON.parse(event.data);
+                
+                if (port.title) {
+                    webPorts.push(port);
+                    renderWebPort(port);
+                } else {
+                    nonWebPorts.push(port);
+                    renderNonWebPort(port);
+                }
+            };
+            
+            eventSource.onerror = () => {
+                eventSource.close();
+            };
+        }
+        
+        function renderWebPort(p) {
+            const grid = document.getElementById('web-grid');
+            if (grid.querySelector('.skeleton-card')) {
+                grid.innerHTML = '';
+            }
+            const title = p.title || 'Untitled';
+            const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
+            const card = document.createElement('a');
+            card.className = 'card';
+            card.href = `http://localhost:${p.port}`;
+            card.target = '_blank';
+            card.innerHTML = `
+                ${thumbnail}
+                <div class="card-body">
+                    <div class="card-header">
+                        <span class="port-badge">${p.port}</span>
+                        <span class="process-badge">${p.process}</span>
+                    </div>
+                    <div class="card-title">${title}</div>
+                    <div class="card-link">http://localhost:${p.port}</div>
+                </div>
+            `;
+            grid.appendChild(card);
+        }
+        
+        function renderNonWebPort(p) {
+            const tbody = document.querySelector('#non-web-table tbody');
+            const row = document.createElement('tr');
+            row.innerHTML = `<td>${p.port}</td><td>${p.process}</td>`;
+            tbody.appendChild(row);
+        }
+        
+        async function refreshOld() {
+            showSkeleton();
             const res = await fetch('/api/ports');
             const data = await res.json();
             const ports = data.ports;
