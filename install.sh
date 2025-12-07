@@ -16,6 +16,10 @@ fi
 echo "依存関係をインストール中..."
 "$VENV_DIR/bin/pip" install -q -r "$PROJECT_DIR/requirements.txt"
 
+# Playwrightブラウザをインストール
+echo "Playwrightブラウザをインストール中..."
+"$VENV_DIR/bin/playwright" install chromium
+
 UVICORN_PATH="$VENV_DIR/bin/uvicorn"
 
 # plistファイルを生成

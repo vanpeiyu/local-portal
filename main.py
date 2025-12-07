@@ -6,6 +6,8 @@ from typing import List, Dict
 import asyncio
 import httpx
 from bs4 import BeautifulSoup
+import base64
+from playwright.async_api import async_playwright
 
 app = FastAPI()
 
@@ -51,12 +53,25 @@ async def get_page_title(port: int) -> str:
     except:
         return None
 
+async def get_thumbnail(port: int) -> str:
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page(viewport={'width': 1280, 'height': 720})
+            await page.goto(f"http://localhost:{port}", timeout=3000, wait_until='networkidle')
+            screenshot = await page.screenshot(type='png')
+            await browser.close()
+            return base64.b64encode(screenshot).decode('utf-8')
+    except:
+        return None
+
 @app.get("/api/ports")
 async def get_ports():
     ports = await scan_ports()
     for p in ports:
         p["process"] = get_process_info(p["port"])
         p["title"] = await get_page_title(p["port"])
+        p["thumbnail"] = await get_thumbnail(p["port"])
     return {"ports": ports}
 
 @app.get("/", response_class=HTMLResponse)
@@ -236,7 +251,7 @@ async def root():
             background: var(--bg-card);
             border: 1px solid var(--border);
             border-radius: 12px;
-            padding: 20px;
+            overflow: hidden;
             transition: all 0.2s;
             box-shadow: 0 2px 8px var(--shadow);
             cursor: pointer;
@@ -244,10 +259,22 @@ async def root():
             display: block;
             color: inherit;
         }
+        .card-thumbnail {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            background: var(--bg-secondary);
+        }
+        .card-body {
+            padding: 20px;
+        }
         .card:hover {
             transform: translateY(-2px);
             box-shadow: 0 8px 24px var(--shadow);
             border-color: var(--accent);
+        }
+        .card:hover .card-thumbnail {
+            opacity: 0.9;
         }
         .card-header {
             display: flex;
@@ -364,15 +391,19 @@ async def root():
             let html = '<div class="grid">';
             ports.forEach(p => {
                 const title = p.title || 'Untitled';
+                const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
                 html += `
                     <a class="card" href="http://localhost:${p.port}" target="_blank">
-                        <div class="card-header">
-                            <span class="port-badge">${p.port}</span>
-                            <span class="process-badge">${p.process}</span>
-                        </div>
-                        <div class="card-title">${title}</div>
-                        <div class="card-link">
-                            http://localhost:${p.port}
+                        ${thumbnail}
+                        <div class="card-body">
+                            <div class="card-header">
+                                <span class="port-badge">${p.port}</span>
+                                <span class="process-badge">${p.process}</span>
+                            </div>
+                            <div class="card-title">${title}</div>
+                            <div class="card-link">
+                                http://localhost:${p.port}
+                            </div>
                         </div>
                     </a>
                 `;
