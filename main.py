@@ -701,7 +701,7 @@ async def root():
                     <div class="portal-card">
                         <div class="portal-icon">🚀</div>
                         <div class="portal-info">
-                            <div class="portal-title">Local Portal (このダッシュボード)</div>
+                            <div class="portal-title">Local Portal</div>
                             <div class="portal-meta">Port 8888 · uvicorn</div>
                         </div>
                     </div>
@@ -855,7 +855,7 @@ async def root():
                     <div class="portal-card">
                         <div class="portal-icon">🚀</div>
                         <div class="portal-info">
-                            <div class="portal-title">Local Portal (このダッシュボード)</div>
+                            <div class="portal-title">Local Portal</div>
                             <div class="portal-meta">Port 8888 · uvicorn</div>
                         </div>
                     </div>
