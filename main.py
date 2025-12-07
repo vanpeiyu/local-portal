@@ -4,6 +4,8 @@ import socket
 import subprocess
 from typing import List, Dict
 import asyncio
+import httpx
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
@@ -39,11 +41,22 @@ def get_process_info(port: int) -> str:
         pass
     return "Unknown"
 
+async def get_page_title(port: int) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"http://localhost:{port}")
+            soup = BeautifulSoup(response.text, 'html.parser')
+            title = soup.find('title')
+            return title.string.strip() if title and title.string else None
+    except:
+        return None
+
 @app.get("/api/ports")
 async def get_ports():
     ports = await scan_ports()
     for p in ports:
         p["process"] = get_process_info(p["port"])
+        p["title"] = await get_page_title(p["port"])
     return {"ports": ports}
 
 @app.get("/", response_class=HTMLResponse)
@@ -88,9 +101,10 @@ async def root():
             }
             let html = '<table><tr><th>ポート</th><th>URL</th><th>プロセス</th></tr>';
             ports.forEach(p => {
+                const title = p.title ? ` - ${p.title}` : '';
                 html += `<tr>
                     <td>${p.port}</td>
-                    <td><a href="http://localhost:${p.port}" target="_blank">http://localhost:${p.port}</a></td>
+                    <td><a href="http://localhost:${p.port}" target="_blank">http://localhost:${p.port}${title}</a></td>
                     <td>${p.process}</td>
                 </tr>`;
             });
