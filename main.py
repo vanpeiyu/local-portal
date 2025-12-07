@@ -1,8 +1,9 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 import socket
 import json
 import subprocess
+import os
 from typing import List, Dict
 import asyncio
 import httpx
@@ -71,6 +72,10 @@ async def get_page_info(port: int) -> tuple:
     except:
         return None, None
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
+
 @app.get("/api/ports")
 async def get_ports():
     ports = await scan_ports()
@@ -81,6 +86,21 @@ async def get_ports():
         else:
             p["title"], p["thumbnail"] = None, None
     return {"ports": ports}
+
+@app.post("/api/control/stop")
+async def stop_service():
+    plist_path = f"{os.path.expanduser('~')}/Library/LaunchAgents/com.localportal.plist"
+    domain = f"gui/{os.getuid()}"
+    
+    def execute_in_background():
+        import time
+        time.sleep(0.5)
+        subprocess.run(['launchctl', 'bootout', domain, plist_path], capture_output=True)
+    
+    import threading
+    thread = threading.Thread(target=execute_in_background, daemon=True)
+    thread.start()
+    return JSONResponse({"success": True})
 
 @app.get("/api/ports/stream")
 async def stream_ports(existing: str = ""):
@@ -153,7 +173,9 @@ async def root():
             margin-bottom: 40px;
             padding-bottom: 20px;
             border-bottom: 2px solid var(--border);
+            position: relative;
         }
+
         h1 {
             font-size: 2rem;
             font-weight: 700;
@@ -183,10 +205,22 @@ async def root():
             background: var(--accent);
             color: white;
         }
-        .btn-primary:hover {
+        .btn-primary:hover:not(:disabled) {
             background: var(--accent-hover);
             transform: translateY(-1px);
             box-shadow: 0 4px 12px var(--shadow);
+        }
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover {
+            background: var(--bg-secondary);
         }
         .btn-icon {
             background: var(--bg-card);
@@ -194,57 +228,99 @@ async def root():
             border: 1px solid var(--border);
             padding: 10px;
         }
-        .btn-icon:hover {
+        .btn-icon:hover:not(:disabled) {
             background: var(--bg-secondary);
         }
-        .info-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 8px var(--shadow);
+        .btn-icon:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
-        .info-card h3 {
-            font-size: 14px;
+        .btn-stop {
+            padding: 6px 12px;
+            background: transparent;
             color: var(--text-secondary);
-            margin-bottom: 16px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            border: 1px solid transparent;
+            font-size: 12px;
+            opacity: 0.3;
         }
-        .cmd-item {
-            display: flex;
+        .btn-stop:hover {
+            opacity: 1;
+            border-color: var(--border);
+            background: var(--bg-secondary);
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
             align-items: center;
-            gap: 12px;
-            margin-bottom: 12px;
+            justify-content: center;
         }
-        .cmd-label {
-            min-width: 80px;
-            font-size: 13px;
-            font-weight: 500;
+        .modal.show {
+            display: flex;
+        }
+        .modal-content {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 8px 32px var(--shadow);
+        }
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
             color: var(--text);
         }
+        .modal-body {
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+        .stopped-message {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        .stopped-message h2 {
+            font-size: 24px;
+            margin-bottom: 16px;
+            color: var(--text);
+        }
+        .stopped-message p {
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
         .cmd-wrapper {
-            flex: 1;
             display: flex;
             align-items: center;
             gap: 8px;
+            margin-bottom: 16px;
         }
-        .cmd-code {
+        .cmd-display {
             flex: 1;
             background: var(--bg-secondary);
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
+            padding: 12px 16px;
+            border-radius: 8px;
             font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
             color: var(--accent);
+            word-break: break-all;
         }
         .btn-copy {
-            padding: 6px 10px;
+            padding: 12px;
             background: var(--bg-secondary);
             border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 12px;
+            border-radius: 8px;
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -253,6 +329,8 @@ async def root():
             color: white;
             border-color: var(--accent);
         }
+
+
         .loading {
             text-align: center;
             padding: 60px 20px;
@@ -450,33 +528,22 @@ async def root():
 <body>
     <div class="container">
         <header>
-            <h1>🚀 Local Portal</h1>
+            <div style="display: flex; align-items: center; gap: 20px;">
+                <h1>🚀 Local Portal</h1>
+                <button class="btn-stop" onclick="confirmStop()">⏹️ 停止</button>
+            </div>
             <div class="controls">
-                <button class="btn-primary" onclick="refresh()">🔄 更新</button>
-                <button class="btn-icon" onclick="toggleTheme()" title="テーマ切替">🌓</button>
+                <button class="btn-primary" id="refreshBtn" onclick="refresh()">🔄 更新</button>
+                <button class="btn-icon" id="themeBtn" onclick="toggleTheme()" title="テーマ切替">🌓</button>
             </div>
         </header>
-        <div class="info-card">
-            <h3>管理コマンド</h3>
-            <div class="cmd-item">
-                <div class="cmd-label">停止:</div>
-                <div class="cmd-wrapper">
-                    <div class="cmd-code">launchctl unload ~/Library/LaunchAgents/com.localportal.plist</div>
-                    <button class="btn-copy" onclick="copyCmd('launchctl unload ~/Library/LaunchAgents/com.localportal.plist')">📋</button>
-                </div>
-            </div>
-            <div class="cmd-item">
-                <div class="cmd-label">起動:</div>
-                <div class="cmd-wrapper">
-                    <div class="cmd-code">launchctl load ~/Library/LaunchAgents/com.localportal.plist</div>
-                    <button class="btn-copy" onclick="copyCmd('launchctl load ~/Library/LaunchAgents/com.localportal.plist')">📋</button>
-                </div>
-            </div>
-            <div class="cmd-item">
-                <div class="cmd-label">再起動:</div>
-                <div class="cmd-wrapper">
-                    <div class="cmd-code">launchctl unload ~/Library/LaunchAgents/com.localportal.plist && launchctl load ~/Library/LaunchAgents/com.localportal.plist</div>
-                    <button class="btn-copy" onclick="copyCmd('launchctl unload ~/Library/LaunchAgents/com.localportal.plist && launchctl load ~/Library/LaunchAgents/com.localportal.plist')">📋</button>
+        <div class="modal" id="modal" onclick="closeModal()">
+            <div class="modal-content" onclick="event.stopPropagation()">
+                <div class="modal-title" id="modalTitle"></div>
+                <div class="modal-body" id="modalBody"></div>
+                <div class="modal-actions">
+                    <button class="btn-secondary" onclick="closeModal()">キャンセル</button>
+                    <button class="btn-primary" onclick="executeAction()" id="confirmBtn">実行</button>
                 </div>
             </div>
         </div>
@@ -485,8 +552,44 @@ async def root():
         </div>
     </div>
     <script>
-        function copyCmd(text) {
-            navigator.clipboard.writeText(text);
+        function confirmStop() {
+            const modal = document.getElementById('modal');
+            document.getElementById('modalTitle').textContent = 'サービスを停止しますか？';
+            document.getElementById('modalBody').textContent = 'Local Portalが停止します。再度起動するにはターミナルでコマンドを実行する必要があります。';
+            modal.classList.add('show');
+        }
+        
+        function closeModal() {
+            document.getElementById('modal').classList.remove('show');
+        }
+        
+        async function executeAction() {
+            closeModal();
+            await fetch('/api/control/stop', { method: 'POST' });
+            setTimeout(() => showStopped(), 1000);
+        }
+        
+        function showStopped() {
+            document.getElementById('refreshBtn').disabled = true;
+            document.getElementById('themeBtn').disabled = true;
+            const cmd = 'launchctl load ~/Library/LaunchAgents/com.localportal.plist';
+            document.getElementById('content').innerHTML = `
+                <div class="stopped-message">
+                    <h2>⏹️ サービスを停止しました</h2>
+                    <p>再度起動するには、以下のコマンドをターミナルで実行してください。</p>
+                    <div class="cmd-wrapper">
+                        <div class="cmd-display">${cmd}</div>
+                        <button class="btn-copy" onclick="copyStartCmd()" title="コピー">📋</button>
+                    </div>
+                </div>
+            `;
+        }
+        
+
+        
+        function copyStartCmd() {
+            const cmd = 'launchctl load ~/Library/LaunchAgents/com.localportal.plist';
+            navigator.clipboard.writeText(cmd);
         }
         
         function toggleTheme() {
