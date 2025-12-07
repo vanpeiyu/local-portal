@@ -325,6 +325,50 @@ async def root():
             padding: 60px 20px;
             color: var(--text-secondary);
         }
+        .section-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin: 32px 0 16px 0;
+            color: var(--text);
+        }
+        .non-web-table {
+            width: 100%;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px var(--shadow);
+        }
+        .non-web-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .non-web-table th {
+            background: var(--bg-secondary);
+            padding: 12px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .non-web-table th:first-child,
+        .non-web-table td:first-child {
+            text-align: right;
+        }
+        .non-web-table th:last-child,
+        .non-web-table td:last-child {
+            text-align: left;
+        }
+        .non-web-table td {
+            padding: 12px 16px;
+            border-top: 1px solid var(--border);
+            font-size: 14px;
+            color: var(--text);
+        }
+        .non-web-table tr:hover {
+            background: var(--bg-secondary);
+        }
     </style>
 </head>
 <body>
@@ -395,27 +439,46 @@ async def root():
                 return;
             }
             
-            let html = '<div class="grid">';
-            ports.forEach(p => {
-                const title = p.title || 'Untitled';
-                const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
-                html += `
-                    <a class="card" href="http://localhost:${p.port}" target="_blank">
-                        ${thumbnail}
-                        <div class="card-body">
-                            <div class="card-header">
-                                <span class="port-badge">${p.port}</span>
-                                <span class="process-badge">${p.process}</span>
+            const webPorts = ports.filter(p => p.title);
+            const nonWebPorts = ports.filter(p => !p.title);
+            
+            let html = '';
+            
+            if (webPorts.length > 0) {
+                html += '<h2 class="section-title">🌐 Webサーバー</h2>';
+                html += '<div class="grid">';
+                webPorts.forEach(p => {
+                    const title = p.title || 'Untitled';
+                    const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
+                    html += `
+                        <a class="card" href="http://localhost:${p.port}" target="_blank">
+                            ${thumbnail}
+                            <div class="card-body">
+                                <div class="card-header">
+                                    <span class="port-badge">${p.port}</span>
+                                    <span class="process-badge">${p.process}</span>
+                                </div>
+                                <div class="card-title">${title}</div>
+                                <div class="card-link">
+                                    http://localhost:${p.port}
+                                </div>
                             </div>
-                            <div class="card-title">${title}</div>
-                            <div class="card-link">
-                                http://localhost:${p.port}
-                            </div>
-                        </div>
-                    </a>
-                `;
-            });
-            html += '</div>';
+                        </a>
+                    `;
+                });
+                html += '</div>';
+            }
+            
+            if (nonWebPorts.length > 0) {
+                html += '<h2 class="section-title">🔌 その他のサービス</h2>';
+                html += '<div class="non-web-table"><table>';
+                html += '<thead><tr><th>ポート</th><th>プロセス</th></tr></thead><tbody>';
+                nonWebPorts.forEach(p => {
+                    html += `<tr><td>${p.port}</td><td>${p.process}</td></tr>`;
+                });
+                html += '</tbody></table></div>';
+            }
+            
             document.getElementById('content').innerHTML = html;
         }
         
