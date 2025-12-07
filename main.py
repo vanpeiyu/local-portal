@@ -170,10 +170,56 @@ async def root():
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 40px;
+            margin-bottom: 20px;
             padding-bottom: 20px;
             border-bottom: 2px solid var(--border);
             position: relative;
+        }
+        .status-bar {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+        .status-bar.scanning {
+            border-color: var(--accent);
+            background: linear-gradient(90deg, var(--bg-card), var(--bg-secondary), var(--bg-card));
+            background-size: 200% 100%;
+            animation: scanning 2s linear infinite;
+        }
+        .status-bar.complete {
+            border-color: var(--border);
+            color: var(--text-secondary);
+            opacity: 0.6;
+        }
+        .status-bar.complete .spinner {
+            display: none;
+        }
+        .status-bar.stopping {
+            border-color: #ef4444;
+            background: linear-gradient(90deg, var(--bg-card), var(--bg-secondary), var(--bg-card));
+            background-size: 200% 100%;
+            animation: scanning 2s linear infinite;
+            color: #ef4444;
+        }
+        .status-bar.stopped {
+            border-color: #ef4444;
+            color: #ef4444;
+            background: var(--bg-card);
+        }
+        .status-bar.stopped .spinner {
+            display: none;
+        }
+
+        @keyframes scanning {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
 
         h1 {
@@ -331,12 +377,7 @@ async def root():
         }
 
 
-        .loading {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--text-secondary);
-            font-size: 16px;
-        }
+
         .spinner {
             display: inline-block;
             width: 20px;
@@ -547,9 +588,11 @@ async def root():
                 </div>
             </div>
         </div>
-        <div id="content" class="loading">
-            <div class="spinner"></div>スキャン中...
+        <div id="status" class="status-bar scanning">
+            <div class="spinner"></div>
+            <span id="statusText">ポートスキャン中...</span>
         </div>
+        <div id="content"></div>
     </div>
     <script>
         function confirmStop() {
@@ -565,6 +608,12 @@ async def root():
         
         async function executeAction() {
             closeModal();
+            
+            const statusBar = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            statusBar.className = 'status-bar stopping';
+            statusText.textContent = 'サービスを停止しています...';
+            
             await fetch('/api/control/stop', { method: 'POST' });
             setTimeout(() => showStopped(), 1000);
         }
@@ -572,24 +621,23 @@ async def root():
         function showStopped() {
             document.getElementById('refreshBtn').disabled = true;
             document.getElementById('themeBtn').disabled = true;
+            
+            const statusBar = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            statusBar.className = 'status-bar stopped';
+            statusText.textContent = '⏹️ サービスを停止しました';
+            
             const cmd = 'launchctl load ~/Library/LaunchAgents/com.localportal.plist';
             document.getElementById('content').innerHTML = `
                 <div class="stopped-message">
-                    <h2>⏹️ サービスを停止しました</h2>
-                    <p>再度起動するには、以下のコマンドをターミナルで実行してください。</p>
+                    <h2>再起動方法</h2>
+                    <p>以下のコマンドをターミナルで実行してください。</p>
                     <div class="cmd-wrapper">
                         <div class="cmd-display">${cmd}</div>
-                        <button class="btn-copy" onclick="copyStartCmd()" title="コピー">📋</button>
+                        <button class="btn-copy" onclick="navigator.clipboard.writeText('${cmd}')" title="コピー">📋</button>
                     </div>
                 </div>
             `;
-        }
-        
-
-        
-        function copyStartCmd() {
-            const cmd = 'launchctl load ~/Library/LaunchAgents/com.localportal.plist';
-            navigator.clipboard.writeText(cmd);
         }
         
         function toggleTheme() {
@@ -632,14 +680,26 @@ async def root():
         }
         
         let currentPorts = new Set();
+        let statusTimeout = null;
         
         async function refresh() {
             const existingPorts = Array.from(currentPorts).join(',');
             const isFirstLoad = currentPorts.size === 0;
             
+            // ステータス更新
+            const statusBar = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            statusBar.className = 'status-bar scanning';
+            statusText.textContent = 'ポートスキャン中...';
+            
             if (isFirstLoad) {
                 showSkeleton();
             } else {
+                // セクションタイトルを更新中表示に
+                const webTitle = document.querySelector('.section-title');
+                const nonWebTitle = document.querySelectorAll('.section-title')[1];
+                if (webTitle) webTitle.textContent = '🌐 Webサーバー (更新中...)';
+                if (nonWebTitle) nonWebTitle.textContent = '🔌 その他のサービス (更新中...)';
                 // 既存カードを確認中状態にする
                 document.querySelectorAll('.card').forEach(card => card.classList.add('checking'));
                 document.querySelectorAll('#non-web-table tbody tr').forEach(row => row.style.opacity = '0.5');
@@ -673,21 +733,55 @@ async def root():
                     
                     currentPorts = newPorts;
                     
+                    // ステータス更新
+                    statusBar.className = 'status-bar complete';
+                    statusText.textContent = `✓ スキャン完了 (Webサーバー: ${webPorts.length}個、その他: ${nonWebPorts.length}個)`;
+                    
+                    // セクションタイトル更新
+                    const webTitle = document.querySelector('.section-title');
+                    const nonWebTitle = document.querySelectorAll('.section-title')[1];
+                    if (webTitle) webTitle.textContent = `🌐 Webサーバー (${webPorts.length})`;
+                    if (nonWebTitle) nonWebTitle.textContent = `🔌 その他のサービス (${nonWebPorts.length})`;
+                    
                     if (webPorts.length === 0 && nonWebPorts.length === 0) {
                         document.getElementById('content').innerHTML = '<div class="empty">📭 開いているポートが見つかりませんでした</div>';
                     }
                     return;
                 }
                 
+                // ステータス更新（検出中）
+                statusText.textContent = `ポートスキャン中... (Webサーバー: ${webPorts.length}個、その他: ${nonWebPorts.length}個)`;
+                
                 const port = JSON.parse(event.data);
+                const isNewPort = !currentPorts.has(port.port);
                 newPorts.add(port.port);
                 
                 if (port.title) {
                     webPorts.push(port);
                     renderWebPort(port);
+                    // 新規ポートの場合、ステータスに表示
+                    if (isNewPort) {
+                        if (statusTimeout) clearTimeout(statusTimeout);
+                        statusText.textContent = `✨ 新規ポート検出: ${port.port} (${port.process})`;
+                        statusTimeout = setTimeout(() => {
+                            if (statusBar.className === 'status-bar scanning') {
+                                statusText.textContent = 'ポートスキャン中...';
+                            }
+                        }, 2000);
+                    }
                 } else {
                     nonWebPorts.push(port);
                     renderNonWebPort(port);
+                    // 新規ポートの場合、ステータスに表示
+                    if (isNewPort) {
+                        if (statusTimeout) clearTimeout(statusTimeout);
+                        statusText.textContent = `✨ 新規ポート検出: ${port.port} (${port.process})`;
+                        statusTimeout = setTimeout(() => {
+                            if (statusBar.className === 'status-bar scanning') {
+                                statusText.textContent = 'ポートスキャン中...';
+                            }
+                        }, 2000);
+                    }
                 }
             };
             
@@ -772,59 +866,7 @@ async def root():
             }
         }
         
-        async function refreshOld() {
-            showSkeleton();
-            const res = await fetch('/api/ports');
-            const data = await res.json();
-            const ports = data.ports;
-            
-            if (ports.length === 0) {
-                document.getElementById('content').innerHTML = '<div class="empty">📭 開いているポートが見つかりませんでした</div>';
-                return;
-            }
-            
-            const webPorts = ports.filter(p => p.title);
-            const nonWebPorts = ports.filter(p => !p.title);
-            
-            let html = '';
-            
-            if (webPorts.length > 0) {
-                html += '<h2 class="section-title">🌐 Webサーバー</h2>';
-                html += '<div class="grid">';
-                webPorts.forEach(p => {
-                    const title = p.title || 'Untitled';
-                    const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
-                    html += `
-                        <a class="card" href="http://localhost:${p.port}" target="_blank">
-                            ${thumbnail}
-                            <div class="card-body">
-                                <div class="card-header">
-                                    <span class="port-badge">${p.port}</span>
-                                    <span class="process-badge">${p.process}</span>
-                                </div>
-                                <div class="card-title">${title}</div>
-                                <div class="card-link">
-                                    http://localhost:${p.port}
-                                </div>
-                            </div>
-                        </a>
-                    `;
-                });
-                html += '</div>';
-            }
-            
-            if (nonWebPorts.length > 0) {
-                html += '<h2 class="section-title">🔌 その他のサービス</h2>';
-                html += '<div class="non-web-table"><table>';
-                html += '<thead><tr><th>ポート</th><th>プロセス</th></tr></thead><tbody>';
-                nonWebPorts.forEach(p => {
-                    html += `<tr><td>${p.port}</td><td>${p.process}</td></tr>`;
-                });
-                html += '</tbody></table></div>';
-            }
-            
-            document.getElementById('content').innerHTML = html;
-        }
+
         
         initTheme();
         refresh();
