@@ -83,10 +83,17 @@ async def get_ports():
     return {"ports": ports}
 
 @app.get("/api/ports/stream")
-async def stream_ports():
+async def stream_ports(existing: str = ""):
     async def generate():
+        existing_ports = set(map(int, existing.split(','))) if existing else set()
         ports = await scan_ports()
-        for p in ports:
+        
+        # 新しいポートを優先、既存ポートは後回し
+        new_ports = [p for p in ports if p["port"] not in existing_ports]
+        old_ports = [p for p in ports if p["port"] in existing_ports]
+        sorted_ports = new_ports + old_ports
+        
+        for p in sorted_ports:
             p["process"], is_likely_web = get_process_info(p["port"])
             if is_likely_web:
                 p["title"], p["thumbnail"] = await get_page_info(p["port"])
@@ -348,6 +355,10 @@ async def root():
         .card:hover .card-thumbnail {
             opacity: 0.9;
         }
+        .card.checking {
+            opacity: 0.5;
+            pointer-events: none;
+        }
         .card-header {
             display: flex;
             justify-content: space-between;
@@ -517,16 +528,48 @@ async def root():
             document.getElementById('content').innerHTML = skeletonHTML;
         }
         
+        let currentPorts = new Set();
+        
         async function refresh() {
-            showSkeleton();
+            const existingPorts = Array.from(currentPorts).join(',');
+            const isFirstLoad = currentPorts.size === 0;
+            
+            if (isFirstLoad) {
+                showSkeleton();
+            } else {
+                // 既存カードを確認中状態にする
+                document.querySelectorAll('.card').forEach(card => card.classList.add('checking'));
+                document.querySelectorAll('#non-web-table tbody tr').forEach(row => row.style.opacity = '0.5');
+            }
+            
+            const newPorts = new Set();
             const webPorts = [];
             const nonWebPorts = [];
             
-            const eventSource = new EventSource('/api/ports/stream');
+            const eventSource = new EventSource(`/api/ports/stream?existing=${existingPorts}`);
             
             eventSource.onmessage = (event) => {
                 if (event.data === '[DONE]') {
                     eventSource.close();
+                    
+                    // 消えたポートのカードを削除
+                    document.querySelectorAll('.card').forEach(card => {
+                        const port = parseInt(card.dataset.port);
+                        if (!newPorts.has(port)) {
+                            card.remove();
+                        }
+                    });
+                    document.querySelectorAll('#non-web-table tbody tr').forEach(row => {
+                        const port = parseInt(row.dataset.port);
+                        if (!newPorts.has(port)) {
+                            row.remove();
+                        } else {
+                            row.style.opacity = '1';
+                        }
+                    });
+                    
+                    currentPorts = newPorts;
+                    
                     if (webPorts.length === 0 && nonWebPorts.length === 0) {
                         document.getElementById('content').innerHTML = '<div class="empty">📭 開いているポートが見つかりませんでした</div>';
                     }
@@ -534,6 +577,7 @@ async def root():
                 }
                 
                 const port = JSON.parse(event.data);
+                newPorts.add(port.port);
                 
                 if (port.title) {
                     webPorts.push(port);
@@ -554,31 +598,75 @@ async def root():
             if (grid.querySelector('.skeleton-card')) {
                 grid.innerHTML = '';
             }
+            
+            // 既存カードを更新または新規作成
+            let card = grid.querySelector(`[data-port="${p.port}"]`);
             const title = p.title || 'Untitled';
             const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
-            const card = document.createElement('a');
-            card.className = 'card';
-            card.href = `http://localhost:${p.port}`;
-            card.target = '_blank';
-            card.innerHTML = `
-                ${thumbnail}
-                <div class="card-body">
-                    <div class="card-header">
-                        <span class="port-badge">${p.port}</span>
-                        <span class="process-badge">${p.process}</span>
+            
+            if (card) {
+                card.classList.remove('checking');
+                card.innerHTML = `
+                    ${thumbnail}
+                    <div class="card-body">
+                        <div class="card-header">
+                            <span class="port-badge">${p.port}</span>
+                            <span class="process-badge">${p.process}</span>
+                        </div>
+                        <div class="card-title">${title}</div>
+                        <div class="card-link">http://localhost:${p.port}</div>
                     </div>
-                    <div class="card-title">${title}</div>
-                    <div class="card-link">http://localhost:${p.port}</div>
-                </div>
-            `;
-            grid.appendChild(card);
+                `;
+            } else {
+                card = document.createElement('a');
+                card.className = 'card';
+                card.dataset.port = p.port;
+                card.href = `http://localhost:${p.port}`;
+                card.target = '_blank';
+                card.innerHTML = `
+                    ${thumbnail}
+                    <div class="card-body">
+                        <div class="card-header">
+                            <span class="port-badge">${p.port}</span>
+                            <span class="process-badge">${p.process}</span>
+                        </div>
+                        <div class="card-title">${title}</div>
+                        <div class="card-link">http://localhost:${p.port}</div>
+                    </div>
+                `;
+                
+                // ポート番号順に挿入
+                const cards = Array.from(grid.querySelectorAll('.card'));
+                const insertIndex = cards.findIndex(c => parseInt(c.dataset.port) > p.port);
+                if (insertIndex === -1) {
+                    grid.appendChild(card);
+                } else {
+                    grid.insertBefore(card, cards[insertIndex]);
+                }
+            }
         }
         
         function renderNonWebPort(p) {
             const tbody = document.querySelector('#non-web-table tbody');
-            const row = document.createElement('tr');
-            row.innerHTML = `<td>${p.port}</td><td>${p.process}</td>`;
-            tbody.appendChild(row);
+            let row = tbody.querySelector(`[data-port="${p.port}"]`);
+            
+            if (row) {
+                row.style.opacity = '1';
+                row.innerHTML = `<td>${p.port}</td><td>${p.process}</td>`;
+            } else {
+                row = document.createElement('tr');
+                row.dataset.port = p.port;
+                row.innerHTML = `<td>${p.port}</td><td>${p.process}</td>`;
+                
+                // ポート番号順に挿入
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const insertIndex = rows.findIndex(r => parseInt(r.dataset.port) > p.port);
+                if (insertIndex === -1) {
+                    tbody.appendChild(row);
+                } else {
+                    tbody.insertBefore(row, rows[insertIndex]);
+                }
+            }
         }
         
         async function refreshOld() {
