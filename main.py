@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 import socket
 import json
 import subprocess
@@ -12,6 +13,7 @@ import base64
 from playwright.async_api import async_playwright
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 async def check_port(port: int) -> Dict:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -79,6 +81,7 @@ async def health_check():
 @app.get("/api/ports")
 async def get_ports():
     ports = await scan_ports()
+    ports = [p for p in ports if p["port"] != 8888]
     for p in ports:
         p["process"], is_likely_web = get_process_info(p["port"])
         if is_likely_web:
@@ -107,6 +110,7 @@ async def stream_ports(existing: str = ""):
     async def generate():
         existing_ports = set(map(int, existing.split(','))) if existing else set()
         ports = await scan_ports()
+        ports = [p for p in ports if p["port"] != 8888]
         
         # 新しいポートを優先、既存ポートは後回し
         new_ports = [p for p in ports if p["port"] not in existing_ports]
@@ -445,6 +449,41 @@ async def root():
             gap: 16px;
             grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
         }
+        .portal-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            color: inherit;
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .portal-icon {
+            font-size: 48px;
+            background: linear-gradient(135deg, var(--accent), #ec4899);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            opacity: 0.5;
+        }
+        .portal-info {
+            flex: 1;
+        }
+        .portal-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        .portal-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
         .card {
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -659,6 +698,13 @@ async def root():
             const skeletonHTML = `
                 <h2 class="section-title">🌐 Webサーバー</h2>
                 <div id="web-grid" class="grid">
+                    <div class="portal-card">
+                        <div class="portal-icon">🚀</div>
+                        <div class="portal-info">
+                            <div class="portal-title">Local Portal (このダッシュボード)</div>
+                            <div class="portal-meta">Port 8888 · uvicorn</div>
+                        </div>
+                    </div>
                     ${Array(3).fill(0).map(() => `
                         <div class="skeleton-card">
                             <div class="skeleton-thumbnail"></div>
@@ -716,7 +762,7 @@ async def root():
                     eventSource.close();
                     
                     // 消えたポートのカードを削除
-                    document.querySelectorAll('.card').forEach(card => {
+                    document.querySelectorAll('.card:not(.portal-card)').forEach(card => {
                         const port = parseInt(card.dataset.port);
                         if (!newPorts.has(port)) {
                             card.remove();
@@ -744,7 +790,19 @@ async def root():
                     if (nonWebTitle) nonWebTitle.textContent = `🔌 その他のサービス (${nonWebPorts.length})`;
                     
                     if (webPorts.length === 0 && nonWebPorts.length === 0) {
-                        document.getElementById('content').innerHTML = '<div class="empty">📭 開いているポートが見つかりませんでした</div>';
+                        document.getElementById('content').innerHTML = `
+                            <h2 class="section-title">🌐 Webサーバー</h2>
+                            <div id="web-grid" class="grid">
+                                <div class="portal-card">
+                                    <div class="portal-icon">🚀</div>
+                                    <div class="portal-info">
+                                        <div class="portal-title">Local Portal</div>
+                                        <div class="portal-meta">Port 8888 · uvicorn</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="empty">📭 他に開いているポートが見つかりませんでした</div>
+                        `;
                     }
                     return;
                 }
@@ -793,7 +851,15 @@ async def root():
         function renderWebPort(p) {
             const grid = document.getElementById('web-grid');
             if (grid.querySelector('.skeleton-card')) {
-                grid.innerHTML = '';
+                grid.innerHTML = `
+                    <div class="portal-card">
+                        <div class="portal-icon">🚀</div>
+                        <div class="portal-info">
+                            <div class="portal-title">Local Portal (このダッシュボード)</div>
+                            <div class="portal-meta">Port 8888 · uvicorn</div>
+                        </div>
+                    </div>
+                `;
             }
             
             // 既存カードを更新または新規作成
