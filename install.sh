@@ -35,7 +35,7 @@ cat > /tmp/com.localportal.plist.tmp << EOF
         <string>$UVICORN_PATH</string>
         <string>main:app</string>
         <string>--host</string>
-        <string>127.0.0.1</string>
+        <string>0.0.0.0</string>
         <string>--port</string>
         <string>8888</string>
     </array>
