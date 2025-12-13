@@ -877,14 +877,14 @@ async def root():
                             <span class="process-badge">${p.process}</span>
                         </div>
                         <div class="card-title">${title}</div>
-                        <div class="card-link">http://localhost:${p.port}</div>
+                        <div class="card-link">http://${window.location.hostname}:${p.port}</div>
                     </div>
                 `;
             } else {
                 card = document.createElement('a');
                 card.className = 'card';
                 card.dataset.port = p.port;
-                card.href = `http://localhost:${p.port}`;
+                card.href = `http://${window.location.hostname}:${p.port}`;
                 card.target = '_blank';
                 card.innerHTML = `
                     ${thumbnail}
@@ -894,7 +894,7 @@ async def root():
                             <span class="process-badge">${p.process}</span>
                         </div>
                         <div class="card-title">${title}</div>
-                        <div class="card-link">http://localhost:${p.port}</div>
+                        <div class="card-link">http://${window.location.hostname}:${p.port}</div>
                     </div>
                 `;
                 
