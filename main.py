@@ -42,9 +42,19 @@ def get_process_info(port: int) -> tuple:
         lines = result.stdout.strip().split('\n')
         if len(lines) > 1:
             parts = lines[1].split()
-            process = parts[0] if parts else "Unknown"
-            
-            non_web_processes = {'postgres', 'mysql', 'mysqld', 'mongod', 'redis-server', 'memcached'}
+            pid = parts[1] if len(parts) > 1 else None
+
+            # PIDからプロセス名を取得（フルパスからbasename）
+            process = "Unknown"
+            if pid:
+                ps_result = subprocess.run(
+                    ['ps', '-p', pid, '-o', 'comm='],
+                    capture_output=True, text=True, timeout=1
+                )
+                if ps_result.stdout.strip():
+                    process = os.path.basename(ps_result.stdout.strip())
+
+            non_web_processes = {'postgres', 'mysql', 'mysqld', 'mongod', 'redis-server', 'memcached', 'code helper'}
             is_non_web = any(nwp in process.lower() for nwp in non_web_processes)
             return process, not is_non_web
     except:
