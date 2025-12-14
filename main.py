@@ -613,6 +613,14 @@ async def root():
         .non-web-table tr:hover {
             background: var(--bg-secondary);
         }
+        @media (max-width: 600px) {
+            h1 { font-size: 1.3rem; }
+            header > div { gap: 8px !important; }
+            .controls { gap: 8px; }
+            button { padding: 8px 12px; font-size: 13px; }
+            .btn-icon { padding: 8px; }
+            .btn-stop { padding: 4px 8px; font-size: 11px; }
+        }
     </style>
 </head>
 <body>
