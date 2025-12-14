@@ -799,10 +799,11 @@ async def root():
                     if (webTitle) webTitle.textContent = `🌐 Webサーバー (${webPorts.length})`;
                     if (nonWebTitle) nonWebTitle.textContent = `🔌 その他のサービス (${nonWebPorts.length})`;
                     
-                    if (webPorts.length === 0 && nonWebPorts.length === 0) {
-                        document.getElementById('content').innerHTML = `
-                            <h2 class="section-title">🌐 Webサーバー</h2>
-                            <div id="web-grid" class="grid">
+                    // Webサーバーが0個の場合、スケルトンを削除
+                    if (webPorts.length === 0) {
+                        const grid = document.getElementById('web-grid');
+                        if (grid) {
+                            grid.innerHTML = `
                                 <div class="portal-card">
                                     <div class="portal-icon">🚀</div>
                                     <div class="portal-info">
@@ -810,9 +811,14 @@ async def root():
                                         <div class="portal-meta">Port 8888 · uvicorn</div>
                                     </div>
                                 </div>
-                            </div>
-                            <div class="empty">📭 他に開いているポートが見つかりませんでした</div>
-                        `;
+                            `;
+                        }
+                    }
+
+                    if (webPorts.length === 0 && nonWebPorts.length === 0) {
+                        document.getElementById('content').insertAdjacentHTML('beforeend',
+                            `<div class="empty">📭 他に開いているポートが見つかりませんでした</div>`
+                        );
                     }
                     return;
                 }
