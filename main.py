@@ -5,6 +5,8 @@ import socket
 import json
 import subprocess
 import os
+import time
+import re
 from typing import List, Dict
 import asyncio
 import httpx
@@ -33,7 +35,105 @@ async def scan_ports(start: int = 3000, end: int = 9999) -> List[Dict]:
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
-def get_process_info(port: int) -> tuple:
+# launchdサービスキャッシュ
+_launchd_cache = {}
+_launchd_cache_time = 0
+CACHE_TTL = 5
+
+def get_launchd_services() -> dict:
+    """launchctl listの結果をキャッシュ付きで取得"""
+    global _launchd_cache, _launchd_cache_time
+
+    if time.time() - _launchd_cache_time < CACHE_TTL and _launchd_cache:
+        return _launchd_cache
+
+    try:
+        result = subprocess.run(['launchctl', 'list'], capture_output=True, text=True, timeout=2)
+        _launchd_cache = {}
+        for line in result.stdout.strip().split('\n')[1:]:
+            parts = line.split('\t')
+            if len(parts) >= 3 and parts[0] != '-':
+                _launchd_cache[parts[0]] = parts[2]  # PID -> Label
+        _launchd_cache_time = time.time()
+    except:
+        pass
+    return _launchd_cache
+
+def get_process_origin(pid: str) -> dict:
+    """プロセスの起動元情報を取得"""
+    origin = {
+        "type": "unknown",
+        "label": "",
+        "parent": "",
+        "command": "",
+        "start_time": ""
+    }
+
+    try:
+        # launchd経由かチェック
+        launchd_services = get_launchd_services()
+        if pid in launchd_services:
+            origin["type"] = "launchd"
+            origin["label"] = launchd_services[pid]
+
+        # ps で親プロセス・コマンド・起動時刻を取得
+        ps_result = subprocess.run(
+            ['ps', '-p', pid, '-o', 'ppid=,command=,lstart='],
+            capture_output=True, text=True, timeout=1
+        )
+        if ps_result.stdout.strip():
+            output = ps_result.stdout.strip()
+            # ppidは最初の数字
+            parts = output.split(None, 1)
+            if len(parts) >= 2:
+                ppid = parts[0]
+                rest = parts[1]
+
+                # lstart は末尾の日時形式 (例: "木  1  6 15:30:00 2026")
+                # command と lstart を分離（曜日で分割を試みる）
+                # 日本語曜日または英語曜日を検出
+                match = re.search(r'\s+([日月火水木金土]|Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+', rest)
+                if match:
+                    command = rest[:match.start()].strip()
+                    lstart = rest[match.start():].strip()
+                    origin["command"] = command
+                    # 起動時刻をHH:MM形式に変換
+                    time_match = re.search(r'(\d{1,2}:\d{2}):\d{2}', lstart)
+                    if time_match:
+                        origin["start_time"] = time_match.group(1)
+                else:
+                    origin["command"] = rest
+
+                # 親プロセス名を取得
+                if ppid and ppid != '0':
+                    parent_result = subprocess.run(
+                        ['ps', '-p', ppid, '-o', 'comm='],
+                        capture_output=True, text=True, timeout=1
+                    )
+                    if parent_result.stdout.strip():
+                        parent_name = os.path.basename(parent_result.stdout.strip())
+                        origin["parent"] = parent_name
+
+                        # 起動元タイプを判定
+                        if origin["type"] == "unknown":
+                            parent_lower = parent_name.lower()
+                            if 'docker' in parent_lower or 'com.docker' in parent_lower:
+                                origin["type"] = "docker"
+                                origin["label"] = "Docker"
+                            elif parent_lower in ('terminal', 'iterm2', 'iterm', 'zsh', 'bash', 'fish', 'sh'):
+                                origin["type"] = "terminal"
+                                origin["label"] = f"Terminal ({parent_name})"
+                            elif parent_lower == 'launchd':
+                                origin["type"] = "launchd"
+                                origin["label"] = "launchd"
+    except:
+        pass
+
+    return origin
+
+def get_process_info(port: int) -> dict:
+    """プロセス名、Web判定、起動元情報を取得"""
+    default_origin = {"type": "unknown", "label": "", "parent": "", "command": "", "start_time": ""}
     try:
         result = subprocess.run(
             ['lsof', '-i', f':{port}', '-sTCP:LISTEN', '-n', '-P'],
@@ -46,6 +146,7 @@ def get_process_info(port: int) -> tuple:
 
             # PIDからプロセス名を取得（フルパスからbasename）
             process = "Unknown"
+            origin = default_origin
             if pid:
                 ps_result = subprocess.run(
                     ['ps', '-p', pid, '-o', 'comm='],
@@ -53,13 +154,15 @@ def get_process_info(port: int) -> tuple:
                 )
                 if ps_result.stdout.strip():
                     process = os.path.basename(ps_result.stdout.strip())
+                # 起動元情報を取得
+                origin = get_process_origin(pid)
 
             non_web_processes = {'postgres', 'mysql', 'mysqld', 'mongod', 'redis-server', 'memcached', 'code helper'}
             is_non_web = any(nwp in process.lower() for nwp in non_web_processes)
-            return process, not is_non_web
+            return {"process": process, "is_likely_web": not is_non_web, "origin": origin}
     except:
         pass
-    return "Unknown", True
+    return {"process": "Unknown", "is_likely_web": True, "origin": default_origin}
 
 async def get_page_info(port: int) -> tuple:
     try:
@@ -93,8 +196,10 @@ async def get_ports():
     ports = await scan_ports()
     ports = [p for p in ports if p["port"] != 8888]
     for p in ports:
-        p["process"], is_likely_web = get_process_info(p["port"])
-        if is_likely_web:
+        info = get_process_info(p["port"])
+        p["process"] = info["process"]
+        p["origin"] = info["origin"]
+        if info["is_likely_web"]:
             p["title"], p["thumbnail"] = await get_page_info(p["port"])
         else:
             p["title"], p["thumbnail"] = None, None
@@ -128,8 +233,10 @@ async def stream_ports(existing: str = ""):
         sorted_ports = new_ports + old_ports
         
         for p in sorted_ports:
-            p["process"], is_likely_web = get_process_info(p["port"])
-            if is_likely_web:
+            info = get_process_info(p["port"])
+            p["process"] = info["process"]
+            p["origin"] = info["origin"]
+            if info["is_likely_web"]:
                 p["title"], p["thumbnail"] = await get_page_info(p["port"])
             else:
                 p["title"], p["thumbnail"] = None, None
@@ -564,6 +671,28 @@ async def root():
         .card-link:hover {
             text-decoration: underline;
         }
+        .card-origin {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            padding: 4px 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+        .origin-icon {
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .origin-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: help;
+            font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+        }
         .empty {
             text-align: center;
             padding: 60px 20px;
@@ -589,25 +718,35 @@ async def root():
         }
         .non-web-table th {
             background: var(--bg-secondary);
+            text-align: left;
             padding: 12px 16px;
             font-size: 13px;
             font-weight: 600;
             color: var(--text-secondary);
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            white-space: nowrap;
         }
         .non-web-table th:first-child,
         .non-web-table td:first-child {
             text-align: right;
         }
+        .non-web-table th:nth-child(3),
+        .non-web-table td:nth-child(3) {
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .non-web-table th:last-child,
         .non-web-table td:last-child {
-            text-align: left;
+            text-align: right;
         }
         .non-web-table td {
             padding: 12px 16px;
             border-top: 1px solid var(--border);
             font-size: 14px;
+            font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
             color: var(--text);
         }
         .non-web-table tr:hover {
@@ -738,7 +877,7 @@ async def root():
                     `).join('')}
                 </div>
                 <h2 class="section-title">🔌 その他のサービス</h2>
-                <div id="non-web-table" class="non-web-table"><table><thead><tr><th>ポート</th><th>プロセス</th></tr></thead><tbody></tbody></table></div>
+                <div id="non-web-table" class="non-web-table"><table><thead><tr><th>ポート</th><th>プロセス</th><th>起動元</th><th>起動時刻</th></tr></thead><tbody></tbody></table></div>
             `;
             document.getElementById('content').innerHTML = skeletonHTML;
         }
@@ -872,6 +1011,30 @@ async def root():
             };
         }
         
+        function getOriginIcon(type) {
+            const icons = {
+                'launchd': '⚙️',
+                'docker': '🐳',
+                'terminal': '🖥️',
+                'unknown': '❓'
+            };
+            return icons[type] || '❓';
+        }
+
+        function getOriginDisplay(origin) {
+            if (!origin) return { icon: '❓', text: '', title: '' };
+            const icon = getOriginIcon(origin.type);
+            let text = origin.label || origin.parent || '';
+            let title = '';
+            if (origin.command) {
+                // コマンドが長い場合は省略
+                const cmd = origin.command;
+                text = text ? `${text} (${cmd.length > 30 ? cmd.substring(0, 30) + '...' : cmd})` : cmd;
+                title = cmd;
+            }
+            return { icon, text, title };
+        }
+
         function renderWebPort(p) {
             const grid = document.getElementById('web-grid');
             if (grid.querySelector('.skeleton-card')) {
@@ -890,7 +1053,13 @@ async def root():
             let card = grid.querySelector(`[data-port="${p.port}"]`);
             const title = p.title || 'Untitled';
             const thumbnail = p.thumbnail ? `<img class="card-thumbnail" src="data:image/png;base64,${p.thumbnail}" alt="${title}">` : '';
-            
+            const origin = getOriginDisplay(p.origin);
+            const originHtml = origin.text ? `
+                <div class="card-origin">
+                    <span class="origin-icon">${origin.icon}</span>
+                    <span class="origin-text" title="${origin.title || origin.text}">${origin.text}</span>
+                </div>` : '';
+
             if (card) {
                 card.classList.remove('checking');
                 card.innerHTML = `
@@ -901,6 +1070,7 @@ async def root():
                             <span class="process-badge">${p.process}</span>
                         </div>
                         <div class="card-title">${title}</div>
+                        ${originHtml}
                         <div class="card-link">http://${window.location.hostname}:${p.port}</div>
                     </div>
                 `;
@@ -918,6 +1088,7 @@ async def root():
                             <span class="process-badge">${p.process}</span>
                         </div>
                         <div class="card-title">${title}</div>
+                        ${originHtml}
                         <div class="card-link">http://${window.location.hostname}:${p.port}</div>
                     </div>
                 `;
@@ -936,15 +1107,25 @@ async def root():
         function renderNonWebPort(p) {
             const tbody = document.querySelector('#non-web-table tbody');
             let row = tbody.querySelector(`[data-port="${p.port}"]`);
-            
+            const origin = getOriginDisplay(p.origin);
+            const startTime = p.origin?.start_time || '-';
+            const originText = origin.text || '-';
+            const originTitle = origin.title || originText;
+            const rowHtml = `
+                <td>${p.port}</td>
+                <td>${p.process}</td>
+                <td title="${originTitle}">${origin.icon} ${originText}</td>
+                <td>${startTime}</td>
+            `;
+
             if (row) {
                 row.style.opacity = '1';
-                row.innerHTML = `<td>${p.port}</td><td>${p.process}</td>`;
+                row.innerHTML = rowHtml;
             } else {
                 row = document.createElement('tr');
                 row.dataset.port = p.port;
-                row.innerHTML = `<td>${p.port}</td><td>${p.process}</td>`;
-                
+                row.innerHTML = rowHtml;
+
                 // ポート番号順に挿入
                 const rows = Array.from(tbody.querySelectorAll('tr'));
                 const insertIndex = rows.findIndex(r => parseInt(r.dataset.port) > p.port);
