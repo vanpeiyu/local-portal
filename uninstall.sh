@@ -22,7 +22,19 @@ if [ -f "/tmp/localportal.error.log" ]; then
     rm /tmp/localportal.error.log
 fi
 
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CERT_DIR="$PROJECT_DIR/certs"
+
+# 証明書ディレクトリを削除
+if [ -d "$CERT_DIR" ]; then
+    read -p "SSL証明書を削除しますか? (y/N): " answer
+    if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+        rm -rf "$CERT_DIR"
+        echo "✓ SSL証明書を削除しました"
+    fi
+fi
+
 echo "✓ アンインストール完了"
 echo ""
 echo "このディレクトリ (venv含む) を削除する場合は手動で実行してください:"
-echo "  rm -rf $(cd "$(dirname "$0")" && pwd)"
+echo "  rm -rf $PROJECT_DIR"

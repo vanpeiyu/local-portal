@@ -1,20 +1,103 @@
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 import socket
 import json
 import subprocess
 import os
 import time
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 import asyncio
 import httpx
 from bs4 import BeautifulSoup
 import base64
 from playwright.async_api import async_playwright
+import websockets
+
+def extract_port_from_host(host: str) -> Optional[int]:
+    """Hostヘッダーからサブドメイン（ポート番号）を抽出
+    例: "5173.air.local:8888" -> 5173
+        "air.local:8888" -> None (管理画面)
+    """
+    if not host:
+        return None
+
+    # ポート番号を除去
+    hostname = host.split(':')[0]
+
+    # サブドメインを取得
+    parts = hostname.split('.')
+    if len(parts) >= 3:  # 5173.air.local
+        try:
+            return int(parts[0])
+        except ValueError:
+            return None
+    return None
+
+async def proxy_request(request: Request, target_port: int) -> Response:
+    """HTTPリクエストをプロキシ"""
+    path = request.url.path
+    query = str(request.url.query)
+    target_url = f"http://localhost:{target_port}{path}"
+    if query:
+        target_url += f"?{query}"
+
+    # リクエストヘッダーをコピー（Hostは除く）
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ('host', 'content-length', 'transfer-encoding')}
+    headers['Host'] = f"localhost:{target_port}"
+
+    # リクエストボディ取得
+    body = await request.body()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+                follow_redirects=False
+            )
+
+            # レスポンスヘッダーをコピー
+            response_headers = dict(response.headers)
+            # hop-by-hop ヘッダーを除去
+            for header in ['transfer-encoding', 'connection', 'keep-alive']:
+                response_headers.pop(header, None)
+
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=response_headers,
+                media_type=response.headers.get('content-type')
+            )
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Proxy error: {str(e)}"},
+                status_code=502
+            )
+
+class ReverseProxyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        host = request.headers.get("host", "")
+        target_port = extract_port_from_host(host)
+
+        if target_port is None:
+            # 管理画面 - 通常のルーティングへ
+            return await call_next(request)
+
+        # WebSocketの場合はスキップ（別途ハンドラで処理）
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
+
+        # プロキシ処理
+        return await proxy_request(request, target_port)
 
 app = FastAPI()
+app.add_middleware(ReverseProxyMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 async def check_port(port: int) -> Dict:
@@ -190,6 +273,63 @@ async def get_page_info(port: int) -> tuple:
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+@app.get("/api/hostname")
+async def get_hostname():
+    """ホスト名とDNS設定情報を返す"""
+    hostname = socket.gethostname()
+    return {
+        "hostname": hostname,
+        "setup_command": f"sudo mkdir -p /etc/resolver && echo 'nameserver 127.0.0.1' | sudo tee /etc/resolver/{hostname.split('.')[-1] if '.' in hostname else 'local'}"
+    }
+
+@app.websocket("/{path:path}")
+async def websocket_proxy(websocket: WebSocket, path: str = ""):
+    """WebSocketリバースプロキシ"""
+    host = websocket.headers.get("host", "")
+    target_port = extract_port_from_host(host)
+
+    if target_port is None:
+        # 管理画面へのWebSocket接続は拒否
+        await websocket.close(code=4000, reason="WebSocket not supported on admin interface")
+        return
+
+    await websocket.accept()
+
+    # WebSocket接続先URL
+    target_url = f"ws://localhost:{target_port}/{path}"
+
+    try:
+        async with websockets.connect(target_url) as ws:
+            async def forward_to_client():
+                try:
+                    async for message in ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception:
+                    pass
+
+            async def forward_to_server():
+                try:
+                    while True:
+                        data = await websocket.receive()
+                        if "text" in data:
+                            await ws.send(data["text"])
+                        elif "bytes" in data:
+                            await ws.send(data["bytes"])
+                except WebSocketDisconnect:
+                    pass
+                except Exception:
+                    pass
+
+            await asyncio.gather(forward_to_client(), forward_to_server(), return_exceptions=True)
+    except Exception as e:
+        try:
+            await websocket.close(code=1011, reason=str(e)[:123])
+        except Exception:
+            pass
 
 @app.get("/api/ports")
 async def get_ports():
@@ -1011,6 +1151,60 @@ async def root():
             };
         }
         
+        function getBaseHostname() {
+            const parts = window.location.hostname.split('.');
+            // 3パート以上なら最後の2パートを使用（5173.air.local -> air.local）
+            // 2パート以下ならそのまま使用（air.local -> air.local）
+            return parts.length > 2 ? parts.slice(-2).join('.') : parts.join('.');
+        }
+
+        function getServerUrl(port) {
+            const base = getBaseHostname();
+            return `https://${port}.${base}:8888`;
+        }
+
+        async function checkDnsSetup() {
+            try {
+                const response = await fetch('/api/hostname');
+                const data = await response.json();
+
+                // 現在のホスト名がローカルドメインか確認
+                const currentHost = window.location.hostname;
+                const parts = currentHost.split('.');
+                const baseDomain = parts.length > 2 ? parts.slice(-2).join('.') : currentHost;
+
+                // テスト用のサブドメインにフェッチしてDNS解決を確認
+                // （実際にはサーバーがないポートでも、DNS解決できればOK）
+                if (!localStorage.getItem('dnsSetupComplete')) {
+                    showDnsSetupModal(data.hostname, data.setup_command);
+                }
+            } catch (e) {
+                console.error('DNS check failed:', e);
+            }
+        }
+
+        function showDnsSetupModal(hostname, setupCommand) {
+            const modal = document.getElementById('modal');
+            document.getElementById('modalTitle').textContent = 'DNS設定が必要です';
+            document.getElementById('modalBody').innerHTML = `
+                <p>リバースプロキシ機能を利用するには、DNSの設定が必要です。</p>
+                <p>以下のコマンドを一度だけ実行してください:</p>
+                <div class="cmd-wrapper">
+                    <div class="cmd-display" id="dnsCommand">${setupCommand}</div>
+                    <button class="btn-copy" onclick="navigator.clipboard.writeText(document.getElementById('dnsCommand').textContent)" title="コピー">📋</button>
+                </div>
+                <p style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+                    設定後、ブラウザを再起動してください。
+                </p>
+            `;
+            document.getElementById('confirmBtn').textContent = '設定済み';
+            document.getElementById('confirmBtn').onclick = () => {
+                localStorage.setItem('dnsSetupComplete', 'true');
+                closeModal();
+            };
+            modal.classList.add('show');
+        }
+
         function getOriginIcon(type) {
             const icons = {
                 'launchd': '⚙️',
@@ -1071,14 +1265,14 @@ async def root():
                         </div>
                         <div class="card-title">${title}</div>
                         ${originHtml}
-                        <div class="card-link">http://${window.location.hostname}:${p.port}</div>
+                        <div class="card-link">${getServerUrl(p.port)}</div>
                     </div>
                 `;
             } else {
                 card = document.createElement('a');
                 card.className = 'card';
                 card.dataset.port = p.port;
-                card.href = `http://${window.location.hostname}:${p.port}`;
+                card.href = getServerUrl(p.port);
                 card.target = '_blank';
                 card.innerHTML = `
                     ${thumbnail}
@@ -1089,7 +1283,7 @@ async def root():
                         </div>
                         <div class="card-title">${title}</div>
                         ${originHtml}
-                        <div class="card-link">http://${window.location.hostname}:${p.port}</div>
+                        <div class="card-link">${getServerUrl(p.port)}</div>
                     </div>
                 `;
                 
@@ -1140,6 +1334,7 @@ async def root():
 
         
         initTheme();
+        checkDnsSetup();
         refresh();
     </script>
 </body>
